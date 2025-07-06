@@ -8,7 +8,10 @@ using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Config;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Utils;
+using CounterStrikeSharp.API.Modules.Memory;
+using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
 using System.Reflection;
+using static CounterStrikeSharp.API.Core.Listeners;
 
 namespace WeaponSpeed;
 
@@ -17,13 +20,15 @@ public class WeaponSpeedConfig : BasePluginConfig
     [JsonPropertyName("WeaponSpeedForce")] public float WeaponSpeedForce { get; set; } = 700f;
     [JsonPropertyName("EnablePlugin")] public bool EnablePlugin { get; set; } = true;
     [JsonPropertyName("WeaponList")] public string[] WeaponList { get; set; } = new string[] { "weapon_taser" };
+    [JsonPropertyName("DisableDamageWeapons")] public string[] DisableDamageWeapons { get; set; } = new string[] { "weapon_taser" };
+    [JsonPropertyName("EnableDamageControl")] public bool EnableDamageControl { get; set; } = true;
 }
 
 [MinimumApiVersion(80)]
 public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
 {
     public override string ModuleName => "Weapon Speed";
-    public override string ModuleVersion => "1.0";
+    public override string ModuleVersion => "1.1";
     
     public WeaponSpeedConfig Config { get; set; } = new();
     
@@ -41,12 +46,63 @@ public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
             config.WeaponList = new string[] { "weapon_taser" };
         }
         
+        if (config.DisableDamageWeapons == null)
+        {
+            config.DisableDamageWeapons = new string[] { "weapon_taser" };
+        }
+        
         Config = config;
     }
 
     public override void Load(bool hotReload)
     {
         RegisterEventHandler<EventWeaponFire>(OnWeaponFire);
+
+        if (Config.EnableDamageControl)
+        {
+            VirtualFunctions.CBaseEntity_TakeDamageOldFunc.Hook(OnTakeDamage, HookMode.Pre);
+        }
+    }
+
+    public override void Unload(bool hotReload)
+    {
+        VirtualFunctions.CBaseEntity_TakeDamageOldFunc.Unhook(OnTakeDamage, HookMode.Pre);
+    }
+
+    private HookResult OnTakeDamage(DynamicHook hook)
+    {
+        if (!Config.EnableDamageControl)
+        {
+            return HookResult.Continue;
+        }
+
+        if (hook.GetParam<CEntityInstance>(0).DesignerName is not "player")
+        {
+            return HookResult.Continue;
+        }
+
+        CTakeDamageInfo info = hook.GetParam<CTakeDamageInfo>(1);
+        CBaseEntity? weapon = info.Ability.Value;
+
+        if (weapon == null)
+            return HookResult.Continue;
+
+        string weaponName = GetDesignerName(weapon.As<CBasePlayerWeapon>());
+
+        if (Config.DisableDamageWeapons.Contains(weaponName))
+        {
+            return HookResult.Handled;
+        }
+
+        return HookResult.Continue;
+    }
+
+    private string GetDesignerName(CBasePlayerWeapon weapon)
+    {
+        if (weapon?.As<CCSWeaponBase>().VData is not { } weaponVData)
+            return string.Empty;
+
+        return weaponVData.Name;
     }
 
     private HookResult OnWeaponFire(EventWeaponFire eventInfo, GameEventInfo info)
@@ -132,7 +188,8 @@ public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
     public void OnReloadConfig(CCSPlayerController? player, CommandInfo commandInfo)
     {
         commandInfo.ReplyToCommand($"Weapon Speed Force before reload: {Config.WeaponSpeedForce}");
-        commandInfo.ReplyToCommand($"Weapons before reload: [{string.Join(", ", Config.WeaponList)}]");
+        commandInfo.ReplyToCommand($"Speed Weapons before reload: [{string.Join(", ", Config.WeaponList)}]");
+        commandInfo.ReplyToCommand($"Damage Disabled Weapons before reload: [{string.Join(", ", Config.DisableDamageWeapons)}]");
         
         try
         {
@@ -140,7 +197,8 @@ public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
             OnConfigParsed(newConfig);
             
             commandInfo.ReplyToCommand($"Weapon Speed Force after reload: {Config.WeaponSpeedForce}");
-            commandInfo.ReplyToCommand($"Weapons after reload: [{string.Join(", ", Config.WeaponList)}]");
+            commandInfo.ReplyToCommand($"Speed Weapons after reload: [{string.Join(", ", Config.WeaponList)}]");
+            commandInfo.ReplyToCommand($"Damage Disabled Weapons after reload: [{string.Join(", ", Config.DisableDamageWeapons)}]");
             commandInfo.ReplyToCommand($"Config loaded successfully!");
         }
         catch (Exception ex)
