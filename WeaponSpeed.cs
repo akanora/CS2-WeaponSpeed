@@ -11,7 +11,6 @@ using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
 using System.Reflection;
-using static CounterStrikeSharp.API.Core.Listeners;
 
 namespace WeaponSpeed;
 
@@ -26,11 +25,11 @@ public class WeaponSpeedConfig : BasePluginConfig
     [JsonPropertyName("VipFlag")] public string VipFlag { get; set; } = "@css/vip";
 }
 
-[MinimumApiVersion(80)]
+[MinimumApiVersion(280)]
 public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
 {
     public override string ModuleName => "Weapon Speed";
-    public override string ModuleVersion => "1.2";
+    public override string ModuleVersion => "1.3";
 
     public WeaponSpeedConfig Config { get; set; } = new();
 
@@ -38,6 +37,8 @@ public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
     private Dictionary<string, float> ParsedVipWeaponList = new();
 
     private static readonly string[] PossibleProps = { "EyeRotation", "EyeAngles", "ViewAngles", "AbsRotation" };
+
+    private MemoryFunctionVoid<CEntityInstance, CTakeDamageInfo, CTakeDamageResult>? _takeDamageFunc;
 
     public void OnConfigParsed(WeaponSpeedConfig config)
     {
@@ -52,13 +53,17 @@ public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
 
         if (Config.EnableDamageControl)
         {
-            VirtualFunctions.CBaseEntity_TakeDamageOldFunc.Hook(OnTakeDamage, HookMode.Pre);
+            _takeDamageFunc = new(GameData.GetSignature("CBaseEntity_TakeDamageOld"));
+            _takeDamageFunc.Hook(OnTakeDamage, HookMode.Pre);
         }
     }
 
     public override void Unload(bool hotReload)
     {
-        VirtualFunctions.CBaseEntity_TakeDamageOldFunc.Unhook(OnTakeDamage, HookMode.Pre);
+        if (_takeDamageFunc != null)
+        {
+            _takeDamageFunc.Unhook(OnTakeDamage, HookMode.Pre);
+        }
     }
 
     private Dictionary<string, float> ParseWeaponSpeedList(string[] list)
@@ -108,7 +113,8 @@ public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
             return HookResult.Continue;
         }
 
-        if (hook.GetParam<CEntityInstance>(0).DesignerName is not "player")
+        var entityInstance = hook.GetParam<CEntityInstance>(0);
+        if (entityInstance.DesignerName is not "player")
         {
             return HookResult.Continue;
         }
@@ -120,9 +126,14 @@ public class WeaponSpeed : BasePlugin, IPluginConfig<WeaponSpeedConfig>
             return HookResult.Continue;
 
         string weaponName = GetDesignerName(weapon.As<CBasePlayerWeapon>());
-        if (Config.DisableDamageWeapons.Contains(weaponName))
+        if (Config.DisableDamageWeapons.Contains(weaponName, StringComparer.OrdinalIgnoreCase))
         {
-            return HookResult.Handled;
+            // Suppress damage by modifying the result
+            CTakeDamageResult result = hook.GetParam<CTakeDamageResult>(2);
+            result.WasDamageSuppressed = true;
+            result.DamageDealt = 0;
+            result.HealthLost = 0;
+            return HookResult.Changed;
         }
 
         return HookResult.Continue;
